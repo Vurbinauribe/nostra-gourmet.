@@ -3,7 +3,6 @@ from datetime import datetime
 import urllib.parse
 import re
 import difflib
-import json
 
 st.set_page_config(
     page_title="NOSTRA GOURMET - Inventario",
@@ -58,8 +57,17 @@ if 'inv_anterior_map' not in st.session_state:
 if 'local_storage_db' not in st.session_state:
     st.session_state.local_storage_db = {}
 
+# GESTIÓN SEGURA DEL REINICIO DE FORMULARIO
+if st.session_state.get('trigger_reset', False):
+    for idx in range(len(st.session_state.productos_base)):
+        st.session_state[f"cant_p_{idx}"] = 0
+        st.session_state[f"venc_p_{idx}"] = ""
+        st.session_state[f"desp_p_{idx}"] = 0
+    st.session_state.inv_anterior_map = {}
+    st.session_state.trigger_reset = False
+
 # ----------------------------------------------------
-# 2. NORMALIZACIÓN Y BÚSQUEDA (CASCADA: SHEETS ➔ FIREBASE ➔ LOCAL)
+# 2. NORMALIZACIÓN Y BÚSQUEDA EN CASCADA
 # ----------------------------------------------------
 def normalizar(texto):
     if not texto:
@@ -77,7 +85,7 @@ def consultar_inv_cascada(cliente_nombre):
     cliente_target = cliente_nombre.strip().lower()
     mapa_res = {}
 
-    # PASO 1: GOOGLE SHEETS (Leyendo columnas exactas: Col B Cliente [1], Col C Producto [2], Col D Cantidad [3])
+    # PASO 1: GOOGLE SHEETS
     try:
         if "gcp_service_account" in st.secrets:
             import gspread
@@ -88,10 +96,10 @@ def consultar_inv_cascada(cliente_nombre):
 
             for i in range(len(rows) - 1, 0, -1):
                 fila = rows[i]
-                c_nom = (fila[1] if len(fila) > 1 else "").strip().lower() # Columna B: Cliente
+                c_nom = (fila[1] if len(fila) > 1 else "").strip().lower()
                 if c_nom == cliente_target:
-                    col_p = fila[2] if len(fila) > 2 else "" # Columna C: Producto
-                    col_c = fila[3] if len(fila) > 3 else "" # Columna D: Cantidad
+                    col_p = fila[2] if len(fila) > 2 else ""
+                    col_c = fila[3] if len(fila) > 3 else ""
 
                     arr_p = col_p.split('\n')
                     arr_c = col_c.split('\n')
@@ -103,16 +111,15 @@ def consultar_inv_cascada(cliente_nombre):
                     if len(mapa_res) > 0:
                         return mapa_res
     except Exception as e:
-        st.sidebar.warning(f"Aviso Sheets (Inventario Anterior): {e}")
+        st.sidebar.warning(f"Sheets (Ant): {e}")
 
     # PASO 2: FIREBASE FIRESTORE
     try:
-        if "firebase" in st.secrets or "gcp_service_account" in st.secrets:
+        if "gcp_service_account" in st.secrets:
             import firebase_admin
             from firebase_admin import credentials, firestore
             if not firebase_admin._apps:
-                cred_dict = dict(st.secrets.get("firebase", st.secrets.get("gcp_service_account")))
-                cred = credentials.Certificate(cred_dict)
+                cred = credentials.Certificate(dict(st.secrets["gcp_service_account"]))
                 firebase_admin.initialize_app(cred)
             db = firestore.client()
             doc_ref = db.collection("inventarios").document(cliente_target).get()
@@ -121,7 +128,7 @@ def consultar_inv_cascada(cliente_nombre):
                 if "ultimoInventario" in data_fs:
                     return data_fs["ultimoInventario"]
     except Exception as e:
-        st.sidebar.warning(f"Aviso Firebase (Inventario Anterior): {e}")
+        st.sidebar.warning(f"Firebase (Ant): {e}")
 
     # PASO 3: MEMORIA LOCAL
     if cliente_target in st.session_state.local_storage_db:
@@ -132,7 +139,7 @@ def consultar_inv_cascada(cliente_nombre):
 def guardar_registros(datos):
     cliente_key = datos['cliente'].strip().lower()
     
-    # Memoria Local
+    # 1. Memoria Local
     mapa_local = {}
     prods = datos['colProductos'].split('\n')
     cants = datos['colCantidades'].split('\n')
@@ -141,7 +148,7 @@ def guardar_registros(datos):
             mapa_local[prods[i]] = cants[i] if i < len(cants) else "0"
     st.session_state.local_storage_db[cliente_key] = mapa_local
 
-    # Google Sheets (Escribiendo en el orden exacto de tus 7 columnas: A hasta G)
+    # 2. Google Sheets
     sheets_ok = False
     try:
         if "gcp_service_account" in st.secrets:
@@ -150,27 +157,26 @@ def guardar_registros(datos):
             sh = gc.open("INVENTARIO NOSTRA GOURMET")
             sheet = sh.worksheet("Hoja 1")
             sheet.append_row([
-                datos['fechaHora'],    # Col A: Fecha Visita
-                datos['cliente'],      # Col B: Cliente
-                datos['colProductos'], # Col C: Producto
-                datos['colCantidades'],# Col D: Cantidad
-                datos['colVencimientos'],# Col E: Fecha venc
-                datos['colDespachos'], # Col F: Despacho
-                ""                     # Col G: nota
+                datos['fechaHora'],
+                datos['cliente'],
+                datos['colProductos'],
+                datos['colCantidades'],
+                datos['colVencimientos'],
+                datos['colDespachos'],
+                ""
             ])
             sheets_ok = True
     except Exception as e:
-        st.error(f"Error al guardar en Google Sheets: {e}")
+        st.error(f"Error Google Sheets: {e}")
 
-    # Firebase Firestore
+    # 3. Firebase Firestore
     firebase_ok = False
     try:
-        if "firebase" in st.secrets or "gcp_service_account" in st.secrets:
+        if "gcp_service_account" in st.secrets:
             import firebase_admin
             from firebase_admin import credentials, firestore
             if not firebase_admin._apps:
-                cred_dict = dict(st.secrets.get("firebase", st.secrets.get("gcp_service_account")))
-                cred = credentials.Certificate(cred_dict)
+                cred = credentials.Certificate(dict(st.secrets["gcp_service_account"]))
                 firebase_admin.initialize_app(cred)
             db = firestore.client()
             db.collection("inventarios").document(cliente_key).set({
@@ -179,10 +185,14 @@ def guardar_registros(datos):
             }, merge=True)
             firebase_ok = True
     except Exception as e:
-        st.error(f"Error al guardar en Firebase: {e}")
+        st.error(f"Error Firebase: {e}")
 
-    if sheets_ok or firebase_ok:
-        st.toast("✅ ¡Guardado con éxito en Sheets y Firebase!", icon="🚀")
+    if sheets_ok and firebase_ok:
+        st.success("¡Guardado con éxito en Google Sheets y Firebase!")
+    elif sheets_ok:
+        st.success("¡Guardado en Google Sheets (Revisa la configuración de Firebase)!")
+    elif firebase_ok:
+        st.success("¡Guardado en Firebase (Revisa la configuración de Google Sheets)!")
 
 # ----------------------------------------------------
 # 3. INTERFAZ DE CLIENTES
@@ -216,7 +226,7 @@ if cliente_sel == "MANUAL":
 st.divider()
 
 # ----------------------------------------------------
-# 4. CARGA RÁPIDA (FLEXIBLE Y ROBUSTA)
+# 4. CARGA RÁPIDA (PEGAR TEXTO)
 # ----------------------------------------------------
 with st.expander("⚡ CARGA RÁPIDA (PEGAR TEXTO)"):
     texto_pasted = st.text_area("Pega aquí el inventario. Ej:\nQueso Grana Padano : 100\nQueso Parmigiano : 1777\nQueso azúl: 5")
@@ -329,7 +339,7 @@ for i in range(1, 6):
 st.divider()
 
 # ----------------------------------------------------
-# 6. ACCIÓN DE ENVÍO Y REINICIO AUTOMÁTICO
+# 6. ACCIÓN DE ENVÍO Y REINICIO AUTOMÁTICO SEGURO
 # ----------------------------------------------------
 if st.button("📲 GENERAR Y GUARDAR REPORTE"):
     if not cliente_final or cliente_final == "-- Seleccionar Cliente --":
@@ -355,7 +365,7 @@ if st.button("📲 GENERAR Y GUARDAR REPORTE"):
             
         mensaje_wa = "\n".join(lineas_wa)
         
-        # 1. Guardar en Base de Datos y Sheets con las columnas exactas
+        # Guardar en Sheets y Firebase
         payload = {
             "fechaHora": f"{fecha_val} {hora_val}",
             "cliente": cliente_final,
@@ -379,11 +389,6 @@ if st.button("📲 GENERAR Y GUARDAR REPORTE"):
             </a>
         ''', unsafe_allow_html=True)
         
-        # 2. REINICIO AUTOMÁTICO INMEDIATO DE TODOS LOS CAMPOS
-        for idx in range(len(st.session_state.productos_base)):
-            st.session_state[f"cant_p_{idx}"] = 0
-            st.session_state[f"venc_p_{idx}"] = ""
-            st.session_state[f"desp_p_{idx}"] = 0
-        st.session_state.inv_anterior_map = {}
-        
-        st.toast("🔄 ¡Formulario reiniciado automáticamente para la siguiente visita!", icon="🚀")
+        # ACTIVAR BANDERA DE REINICIO SEGURO Y RECARGAR
+        st.session_state.trigger_reset = True
+        st.rerun()
