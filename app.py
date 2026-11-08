@@ -240,3 +240,159 @@ with st.expander("⚡ CARGA RÁPIDA (PEGAR TEXTO)"):
             
             p_nombre, p_resto = "", ""
             if ':' in linea_str:
+                partes = linea_str.split(':', 1)
+                p_nombre = partes[0].strip()
+                p_resto = partes[1].strip()
+            else:
+                m = re.match(r'^([^\d]+)\s+(\d+.*)$', linea_str)
+                if m:
+                    p_nombre = m.group(1).strip()
+                    p_resto = m.group(2).strip()
+            
+            if p_nombre and p_resto:
+                match_venc = re.search(r'\((.*?)\)', p_resto)
+                venc_val = match_venc.group(1).strip() if match_venc else ""
+                cant_str = re.sub(r'\(.*?\)', '', p_resto).strip()
+                
+                if cant_str.isdigit():
+                    cant_num = int(cant_str)
+                    norm_input = normalizar(p_nombre)
+                    
+                    target_idx = None
+                    if norm_input in base_norm_map:
+                        target_idx = base_norm_map[norm_input]
+                    else:
+                        for n_key, idx in base_norm_map.items():
+                            if n_key in norm_input or norm_input in n_key:
+                                target_idx = idx
+                                break
+                    
+                    if target_idx is not None:
+                        st.session_state[f"cant_p_{target_idx}"] = cant_num
+                        st.session_state[f"venc_p_{target_idx}"] = venc_val
+                        cargados += 1
+                    else:
+                        nuevo_p = p_nombre.strip().title()
+                        if nuevo_p not in st.session_state.productos_base:
+                            st.session_state.productos_base.append(nuevo_p)
+                            n_idx = len(st.session_state.productos_base) - 1
+                            st.session_state[f"cant_p_{n_idx}"] = cant_num
+                            st.session_state[f"venc_p_{n_idx}"] = venc_val
+                            cargados += 1
+
+        st.success(f"¡Cargados {cargados} productos a la tabla!")
+        st.rerun()
+
+# ----------------------------------------------------
+# 5. TABLA DE PRODUCTOS
+# ----------------------------------------------------
+st.markdown("### 📋 Tabla de Productos")
+
+h1, h2, h3, h4, h5 = st.columns([2.2, 0.9, 1.3, 0.8, 0.8])
+h1.markdown("**PRODUCTO**")
+h2.markdown("**CANT.**")
+h3.markdown("**F. VENC**")
+h4.markdown("**DESP.**")
+h5.markdown("**ANT.**")
+
+inventario_ingresado = {}
+
+for idx, prod in enumerate(st.session_state.productos_base):
+    val_ant = st.session_state.inv_anterior_map.get(prod, "-")
+    
+    c = st.columns([2.2, 0.9, 1.3, 0.8, 0.8])
+    with c[0]:
+        st.write(prod)
+    with c[1]:
+        cant = st.number_input(f"c_{idx}", min_value=0, key=f"cant_p_{idx}", label_visibility="collapsed")
+    with c[2]:
+        venc = st.text_input(f"v_{idx}", placeholder="dd/mm/aa", key=f"venc_p_{idx}", label_visibility="collapsed")
+    with c[3]:
+        desp = st.number_input(f"d_{idx}", min_value=0, key=f"desp_p_{idx}", label_visibility="collapsed")
+    with c[4]:
+        st.markdown(f"<div style='text-align: center; background: #f1f5f9; padding: 4px; border-radius: 4px; color: #64748b; font-size: 12px;'>{val_ant}</div>", unsafe_allow_html=True)
+    
+    if cant > 0 or desp > 0:
+        inventario_ingresado[prod] = {"cantidad": cant, "vencimiento": venc, "despacho": desp}
+
+st.markdown("---")
+st.markdown("### ➕ Productos Libres Adicionales")
+custom_inventario = {}
+for i in range(1, 6):
+    cc = st.columns([2.2, 0.9, 1.3, 0.8, 0.8])
+    with cc[0]:
+        c_prod = st.text_input(f"P {i}", placeholder=f"+ Producto {i}", key=f"custom_prod_{i}", label_visibility="collapsed")
+    with cc[1]:
+        c_cant = st.number_input(f"C {i}", min_value=0, key=f"custom_cant_{i}", label_visibility="collapsed")
+    with cc[2]:
+        c_venc = st.text_input(f"V {i}", placeholder="dd/mm/aa", key=f"custom_venc_{i}", label_visibility="collapsed")
+    with cc[3]:
+        c_desp = st.number_input(f"D {i}", min_value=0, key=f"custom_desp_{i}", label_visibility="collapsed")
+    with cc[4]:
+        st.markdown("<div style='text-align: center; background: #f1f5f9; padding: 4px; border-radius: 4px; color: #64748b; font-size: 12px;'>-</div>", unsafe_allow_html=True)
+        
+    if c_prod.strip() != "" and c_cant > 0:
+        custom_inventario[c_prod.strip()] = {"cantidad": c_cant, "vencimiento": c_venc, "despacho": c_desp}
+
+st.divider()
+
+# ----------------------------------------------------
+# 6. ACCIÓN DE ENVÍO, WHATSAPP Y REINICIO MANUAL
+# ----------------------------------------------------
+if st.button("📲 GENERAR Y GUARDAR REPORTE"):
+    if not cliente_final or cliente_final == "-- Seleccionar Cliente --":
+        st.error("Por favor seleccione un cliente válido.")
+    elif not inventario_ingresado and not custom_inventario:
+        st.error("No hay productos cargados en el inventario.")
+    else:
+        todo_inv = {**inventario_ingresado, **custom_inventario}
+        
+        prods_l, cants_l, vencs_l, desps_l = [], [], [], []
+        lineas_wa = [f"{cliente_final}", f"{fecha_val} {hora_val}", "Inventario", "", "PRODUCTO", ""]
+        
+        for p, info in todo_inv.items():
+            l = f"{p}  {info['cantidad']}"
+            if info['vencimiento']:
+                l += f" ({info['vencimiento']})"
+            lineas_wa.append(l)
+            
+            prods_l.append(p)
+            cants_l.append(str(info['cantidad']))
+            vencs_l.append(info['vencimiento'] if info['vencimiento'] else "-")
+            desps_l.append(str(info['despacho']))
+            
+        mensaje_wa = "\n".join(lineas_wa)
+        
+        # Guardar en Sheets y Firebase inmediatamente
+        payload = {
+            "fechaHora": f"{fecha_val} {hora_val}",
+            "cliente": cliente_final,
+            "colProductos": "\n".join(prods_l),
+            "colCantidades": "\n".join(cants_l),
+            "colVencimientos": "\n".join(vencs_l),
+            "colDespachos": "\n".join(desps_l)
+        }
+        guardar_registros(payload)
+        
+        st.success("¡Reporte generado y guardado en la base de datos!")
+        st.text_area("Vista previa WhatsApp:", mensaje_wa, height=140)
+        
+        url_wa = "https://api.whatsapp.com/send?phone=584244527538&text=" + urllib.parse.quote(mensaje_wa)
+        
+        # Botón de WhatsApp fijo
+        st.markdown(f'''
+            <a href="{url_wa}" target="_blank">
+                <button style="width: 100%; background-color: #25D366; color: white; padding: 14px; border: none; border-radius: 8px; font-weight: bold; font-size: 16px; cursor: pointer; text-transform: uppercase; margin-bottom: 10px;">
+                    💬 ABRIR WHATSAPP CON EL REPORTE
+                </button>
+            </a>
+        ''', unsafe_allow_html=True)
+
+# Botón independiente para limpiar y vaciar la tabla para una nueva visita
+if st.button("🔄 NUEVA VISITA / LIMPIAR FORMULARIO"):
+    for idx in range(len(st.session_state.productos_base)):
+        st.session_state[f"cant_p_{idx}"] = 0
+        st.session_state[f"venc_p_{idx}"] = ""
+        st.session_state[f"desp_p_{idx}"] = 0
+    st.session_state.inv_anterior_map = {}
+    st.rerun()
