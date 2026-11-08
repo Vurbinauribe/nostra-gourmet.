@@ -111,7 +111,7 @@ def consultar_inv_cascada(cliente_nombre):
                     if len(mapa_res) > 0:
                         return mapa_res
     except Exception as e:
-        st.sidebar.warning(f"Sheets (Ant): {e}")
+        pass
 
     # PASO 2: FIREBASE FIRESTORE
     try:
@@ -128,7 +128,7 @@ def consultar_inv_cascada(cliente_nombre):
                 if "ultimoInventario" in data_fs:
                     return data_fs["ultimoInventario"]
     except Exception as e:
-        st.sidebar.warning(f"Firebase (Ant): {e}")
+        pass
 
     # PASO 3: MEMORIA LOCAL
     if cliente_target in st.session_state.local_storage_db:
@@ -187,12 +187,8 @@ def guardar_registros(datos):
     except Exception as e:
         st.error(f"Error Firebase: {e}")
 
-    if sheets_ok and firebase_ok:
-        st.success("¡Guardado con éxito en Google Sheets y Firebase!")
-    elif sheets_ok:
-        st.success("¡Guardado en Google Sheets (Revisa la configuración de Firebase)!")
-    elif firebase_ok:
-        st.success("¡Guardado en Firebase (Revisa la configuración de Google Sheets)!")
+    if sheets_ok or firebase_ok:
+        st.success("¡Guardado correctamente en la base de datos!")
 
 # ----------------------------------------------------
 # 3. INTERFAZ DE CLIENTES
@@ -343,7 +339,7 @@ st.divider()
 # ----------------------------------------------------
 if st.button("📲 GENERAR Y GUARDAR REPORTE"):
     if not cliente_final or cliente_final == "-- Seleccionar Cliente --":
-        st.error("Por favor seleccione un cliente válido.")
+        st.error("Please select a valid client / Por favor seleccione un cliente válido.")
     elif not inventario_ingresado and not custom_inventario:
         st.error("No hay productos cargados en el inventario.")
     else:
