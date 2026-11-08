@@ -4,14 +4,13 @@ import urllib.parse
 import re
 import difflib
 
-# Configuración inicial de la página
 st.set_page_config(
-    page_title="NOSTRA GOURMET - Inventario Móvil",
+    page_title="NOSTRA GOURMET - Inventario",
     layout="centered",
     initial_sidebar_state="collapsed"
 )
 
-# Estilos limpios y profesionales (Garantiza legibilidad perfecta)
+# Estilos corporativos limpios y legibles
 st.markdown("""
     <style>
         .main-title { color: #6b001a; text-align: center; font-size: 22px; font-weight: 800; text-transform: uppercase; margin-bottom: 0px; }
@@ -25,7 +24,7 @@ st.markdown('<p class="main-title">NOSTRA GOURMET</p>', unsafe_allow_html=True)
 st.markdown('<p class="sub-title">Inventario y Control de Visitas</p>', unsafe_allow_html=True)
 
 # ----------------------------------------------------
-# 1. INICIALIZAR MEMORIA DE SESIÓN (ESTADO PERSISTENTE)
+# 1. LISTADOS BASE
 # ----------------------------------------------------
 if 'clientes_lista' not in st.session_state:
     st.session_state.clientes_lista = [
@@ -53,47 +52,89 @@ if 'productos_base' not in st.session_state:
         "Salametto", "Pieza Jamon Serrano Rodriguez", "Pieza Queso Padano", "Pieza Queso Parmigiano"
     ]
 
-if 'datos_cargados' not in st.session_state:
-    st.session_state.datos_cargados = {} # Almacena {producto: {cant, venc, desp}}
+# Inicializar inventario anterior en estado
+if 'inv_anterior_map' not in st.session_state:
+    st.session_state.inv_anterior_map = {}
 
 # ----------------------------------------------------
-# 2. CONEXIÓN CON BASES DE DATOS (SHEETS / FIRESTORE)
+# 2. FUNCIONES DE CONEXIÓN A GOOGLE SHEETS / FIRESTORE
 # ----------------------------------------------------
-def obtener_inventario_anterior(nombre_cliente):
-    inventario_previo = {}
+def consultar_ultimo_inventario_sheets(nombre_cliente):
+    """Consulta directa a la base de datos en Google Sheets / Firestore"""
+    mapa_anterior = {}
     if not nombre_cliente or nombre_cliente == "-- Seleccionar Cliente --":
-        return inventario_previo
+        return mapa_anterior
 
+    try:
+        if "gcp_service_account" in st.secrets:
+            import gspread
+            gc = gspread.service_account_from_dict(dict(st.secrets["gcp_service_account"]))
+            # Nombre exacto de tu hoja o ID de Spreadsheet
+            sh = gc.open("NostraGourmetDB") 
+            sheet = sh.sheet1
+            data = sheet.get_all_values()
+            
+            cliente_buscado = nombre_cliente.strip().lower()
+            
+            # Recorrer de abajo hacia arriba (igual que en GAS)
+            for i in range(len(data) - 1, 0, -1):
+                fila = data[i]
+                cliente_fila = (fila[1] if len(fila) > 1 and fila[1] else "") or (fila[2] if len(fila) > 2 and fila[2] else "")
+                
+                if cliente_fila.strip().lower() == cliente_buscado:
+                    col_c = fila[2] if len(fila) > 2 else ""
+                    col_d = fila[3] if len(fila) > 3 else ""
+                    
+                    # Formato Nuevo (Col C prods, Col D cants)
+                    if ':' not in col_c and col_d != "":
+                        arr_p = col_c.split('\n')
+                        arr_c = col_d.split('\n')
+                        for j in range(len(arr_p)):
+                            p_nom = arr_p[j].strip()
+                            p_cant = arr_c[j].strip() if j < len(arr_c) else "0"
+                            if p_nom and p_nom not in mapa_anterior:
+                                mapa_anterior[p_nom] = p_cant
+                    # Formato Viejo (Texto condensado con :)
+                    else:
+                        lineas = col_c.split('\n') if ':' in col_c else col_d.split('\n')
+                        for lin in lineas:
+                            if ':' in lin:
+                                p_partes = lin.split(':')
+                                prod = p_partes[0].strip()
+                                cant_b = p_partes[1].strip()
+                                cant_l = cant_b.split('(')[0].strip()
+                                if prod and prod not in mapa_anterior:
+                                    mapa_anterior[prod] = cant_l
+                    if len(mapa_anterior) > 0:
+                        break
+    except Exception as e:
+        print("Aviso al consultar base de datos:", e)
+        
+    return mapa_anterior
+
+def guardar_visita_sheets_firestore(datos):
+    """Guarda los datos en Google Sheets y Firestore al presionar el botón"""
     try:
         if "gcp_service_account" in st.secrets:
             import gspread
             gc = gspread.service_account_from_dict(dict(st.secrets["gcp_service_account"]))
             sh = gc.open("NostraGourmetDB")
             sheet = sh.sheet1
-            data = sheet.get_all_values()
             
-            cliente_buscado = nombre_cliente.strip().lower()
-            for i in range(len(data) - 1, 0, -1):
-                fila = data[i]
-                cliente_fila = (fila[1] if len(fila) > 1 and fila[1] else "") or (fila[2] if len(fila) > 2 and fila[2] else "")
-                if cliente_fila.strip().lower() == cliente_buscado:
-                    col_c = fila[2] if len(fila) > 2 else ""
-                    lines = col_c.split('\n') if col_c else []
-                    for line in lines:
-                        if ':' in line:
-                            parts = line.split(':')
-                            p = parts[0].strip()
-                            c_bruta = parts[1].strip()
-                            c_limpia = c_bruta.split('(')[0].strip()
-                            if p and p not in inventario_previo:
-                                inventario_previo[p] = c_limpia
-                    break
+            sheet.append_row([
+                datos['fechaHora'],
+                datos['cliente'],
+                datos['colProductos'],
+                datos['colCantidades'],
+                datos['colVencimientos'],
+                datos['colDespachos']
+            ])
+            st.toast("✅ ¡Registrado con éxito en Google Sheets!", icon="📊")
     except Exception as e:
-        pass
-    return inventario_previo
+        st.warning(f"Reporte generado localmente. (Para guardar en Sheets en vivo, configura st.secrets). Error: {e}")
 
 # ----------------------------------------------------
-# 3. INTERFAZ DE CLIENTES Y FECHA
+# 3. CONTROLES Y SELECCIÓN DE CLIENTE
 # ----------------------------------------------------
 col_f1, col_f2 = st.columns(2)
 with col_f1:
@@ -101,30 +142,37 @@ with col_f1:
 with col_f2:
     hora_val = st.text_input("Hora", value=datetime.now().strftime("%H:%M"))
 
-cliente_sel = st.selectbox("Cliente / Establecimiento", st.session_state.clientes_lista)
+def al_cambiar_cliente():
+    cliente_sel = st.session_state.cliente_select_key
+    if cliente_sel and cliente_sel != "-- Seleccionar Cliente --" and cliente_sel != "MANUAL":
+        st.session_state.inv_anterior_map = consultar_ultimo_inventario_sheets(cliente_sel)
+
+cliente_sel = st.selectbox(
+    "Cliente / Establecimiento", 
+    st.session_state.clientes_lista,
+    key="cliente_select_key",
+    on_change=al_cambiar_cliente
+)
 
 cliente_final = cliente_sel
 if cliente_sel == "MANUAL":
-    nuevo_cliente_input = st.text_input("Escribe el nombre del Nuevo Cliente")
-    if nuevo_cliente_input:
-        cliente_final = nuevo_cliente_input.strip()
-        # Guardar en la lista de clientes para que no se borre
+    nuevo_cli = st.text_input("Nombre del Nuevo Cliente")
+    if nuevo_cli:
+        cliente_final = nuevo_cli.strip()
         if cliente_final not in st.session_state.clientes_lista:
             st.session_state.clientes_lista.insert(2, cliente_final)
-
-inventario_anterior = obtener_inventario_anterior(cliente_final)
 
 st.divider()
 
 # ----------------------------------------------------
-# 4. CARGA RÁPIDA INTELIGENTE (CON COINCIDENCIA DIFUSA)
+# 4. CARGA RÁPIDA (PEGAR TEXTO CORREGIDO)
 # ----------------------------------------------------
-with st.expander("⚡ CARGA RÁPIDA (PEGAR TEXTO INTELIGENTE)"):
-    texto_pasted = st.text_area("Pega aquí el inventario. Ej:\npieza de padano: 8\nProsciutto: 30 (12/10/26)")
+with st.expander("⚡ CARGA RÁPIDA (PEGAR TEXTO)"):
+    texto_pasted = st.text_area("Pega aquí el inventario. Ej:\nQueso Grana Padano: 8\nProsciutto: 30 (12/10/26)")
     
-    if st.button("📥 Procesar y Cargar en la Tabla"):
-        nuevos_datos = {}
-        base_low = {p.lower(): p for p in st.session_state.productos_base}
+    if st.button("📥 Cargar Datos en la Tabla"):
+        base_low = {p.lower(): i for i, p in enumerate(st.session_state.productos_base)}
+        cargados_count = 0
         
         for linea in texto_pasted.split('\n'):
             if ':' in linea:
@@ -132,46 +180,48 @@ with st.expander("⚡ CARGA RÁPIDA (PEGAR TEXTO INTELIGENTE)"):
                 p_nombre = partes[0].strip()
                 p_resto = partes[1].strip()
                 
-                # Extraer vencimiento entre paréntesis
                 match_venc = re.search(r'\((.*?)\)', p_resto)
                 venc_val = match_venc.group(1) if match_venc else ""
                 cant_val = re.sub(r'\(.*?\)', '', p_resto).strip()
                 
                 if cant_val.isdigit():
+                    cant_num = int(cant_val)
                     p_norm = p_nombre.lower()
-                    producto_asignado = None
                     
-                    # 1. Coincidencia exacta o parcial
-                    for pb_low, pb_real in base_low.items():
+                    # Buscar coincidencia en productos base
+                    found_idx = None
+                    for pb_low, idx in base_low.items():
                         if p_norm in pb_low or pb_low in p_norm:
-                            producto_asignado = pb_real
+                            found_idx = idx
                             break
                     
-                    # 2. Coincidencia aproximada inteligente (si no encontró por inclusión)
-                    if not producto_asignado:
+                    if found_idx is None:
                         matches = difflib.get_close_matches(p_norm, list(base_low.keys()), n=1, cutoff=0.4)
                         if matches:
-                            producto_asignado = base_low[matches[0]]
+                            found_idx = base_low[matches[0]]
                     
-                    # 3. Si de verdad es un producto nuevo que no existe en la base
-                    if not producto_asignado:
-                        producto_asignado = p_nombre.capitalize()
-                        if producto_asignado not in st.session_state.productos_base:
-                            st.session_state.productos_base.append(producto_asignado)
-                    
-                    nuevos_datos[producto_asignado] = {
-                        "cant": int(cant_val),
-                        "venc": venc_val,
-                        "desp": 0
-                    }
-        
-        st.session_state.datos_cargados = nuevos_datos
-        st.success(f"¡Se procesaron y cargaron {len(nuevos_datos)} productos correctamente!")
+                    # Asignar directamente a las llaves de los inputs en Streamlit
+                    if found_idx is not None:
+                        st.session_state[f"cant_p_{found_idx}"] = cant_num
+                        st.session_state[f"venc_p_{found_idx}"] = venc_val
+                        cargados_count += 1
+                    else:
+                        # Si es producto nuevo, agregarlo a productos base
+                        nuevo_p_name = p_nombre.capitalize()
+                        if nuevo_p_name not in st.session_state.productos_base:
+                            st.session_state.productos_base.append(nuevo_p_name)
+                            n_idx = len(st.session_state.productos_base) - 1
+                            st.session_state[f"cant_p_{n_idx}"] = cant_num
+                            st.session_state[f"venc_p_{n_idx}"] = venc_val
+                            cargados_count += 1
+
+        st.success(f"¡Se cargaron {cargados_count} productos directamente en la tabla!")
+        st.rerun()
 
 # ----------------------------------------------------
 # 5. TABLA DE PRODUCTOS
 # ----------------------------------------------------
-st.markdown("### 📋 Listado de Productos")
+st.markdown("### 📋 Tabla de Productos")
 
 h1, h2, h3, h4, h5 = st.columns([2.2, 0.9, 1.3, 0.8, 0.8])
 h1.markdown("**PRODUCTO**")
@@ -183,63 +233,57 @@ h5.markdown("**ANT.**")
 inventario_ingresado = {}
 
 for idx, prod in enumerate(st.session_state.productos_base):
-    # Recuperar datos si vinieron de carga rápida o sesión previa
-    pre = st.session_state.datos_cargados.get(prod, {"cant": 0, "venc": "", "desp": 0})
-    val_ant = inventario_anterior.get(prod, "-")
+    val_ant = st.session_state.inv_anterior_map.get(prod, "-")
     
     c = st.columns([2.2, 0.9, 1.3, 0.8, 0.8])
     with c[0]:
         st.write(prod)
     with c[1]:
-        cant = st.number_input(f"c_{idx}", min_value=0, value=pre["cant"], key=f"cant_p_{idx}", label_visibility="collapsed")
+        cant = st.number_input(f"c_{idx}", min_value=0, key=f"cant_p_{idx}", label_visibility="collapsed")
     with c[2]:
-        venc = st.text_input(f"v_{idx}", value=pre["venc"], placeholder="dd/mm/aa", key=f"venc_p_{idx}", label_visibility="collapsed")
+        venc = st.text_input(f"v_{idx}", placeholder="dd/mm/aa", key=f"venc_p_{idx}", label_visibility="collapsed")
     with c[3]:
-        desp = st.number_input(f"d_{idx}", min_value=0, value=pre["desp"], key=f"desp_p_{idx}", label_visibility="collapsed")
+        desp = st.number_input(f"d_{idx}", min_value=0, key=f"desp_p_{idx}", label_visibility="collapsed")
     with c[4]:
         st.markdown(f"<div style='text-align: center; background: #f1f5f9; padding: 4px; border-radius: 4px; color: #64748b; font-size: 12px;'>{val_ant}</div>", unsafe_allow_html=True)
     
     if cant > 0 or desp > 0:
         inventario_ingresado[prod] = {"cantidad": cant, "vencimiento": venc, "despacho": desp}
 
-# Productos libres adicionales (5 filas dinámicas)
 st.markdown("---")
 st.markdown("### ➕ Productos Libres Adicionales")
 custom_inventario = {}
 for i in range(1, 6):
     cc = st.columns([2.2, 0.9, 1.3, 0.8, 0.8])
     with cc[0]:
-        c_prod = st.text_input(f"P {i}", placeholder=f"+ Producto libre {i}", key=f"custom_prod_{i}", label_visibility="collapsed")
+        c_prod = st.text_input(f"P {i}", placeholder=f"+ Producto {i}", key=f"custom_prod_{i}", label_visibility="collapsed")
     with cc[1]:
-        c_cant = st.number_input(f"C {i}", min_value=0, value=0, key=f"custom_cant_{i}", label_visibility="collapsed")
+        c_cant = st.number_input(f"C {i}", min_value=0, key=f"custom_cant_{i}", label_visibility="collapsed")
     with cc[2]:
         c_venc = st.text_input(f"V {i}", placeholder="dd/mm/aa", key=f"custom_venc_{i}", label_visibility="collapsed")
     with cc[3]:
-        c_desp = st.number_input(f"D {i}", min_value=0, value=0, key=f"custom_desp_{i}", label_visibility="collapsed")
+        c_desp = st.number_input(f"D {i}", min_value=0, key=f"custom_desp_{i}", label_visibility="collapsed")
     with cc[4]:
         st.markdown("<div style='text-align: center; background: #f1f5f9; padding: 4px; border-radius: 4px; color: #64748b; font-size: 12px;'>-</div>", unsafe_allow_html=True)
         
     if c_prod.strip() != "" and c_cant > 0:
-        nombre_libre = c_prod.strip()
-        custom_inventario[nombre_libre] = {"cantidad": c_cant, "vencimiento": c_venc, "despacho": c_desp}
-        # Agregar automáticamente a la base de productos generales para futuras visitas
-        if nombre_libre not in st.session_state.productos_base:
-            st.session_state.productos_base.append(nombre_libre)
+        custom_inventario[c_prod.strip()] = {"cantidad": c_cant, "vencimiento": c_venc, "despacho": c_desp}
 
 st.divider()
 
 # ----------------------------------------------------
-# 6. GENERACIÓN Y ENVÍO A WHATSAPP / SHEETS
+# 6. ACCIÓN GENERAL: GENERAR, GUARDAR Y WHATSAPP
 # ----------------------------------------------------
-if st.button("📲 Generar Vista Previa y Enviar a WhatsApp"):
+if st.button("📲 Generar Vista Previa y Guardar"):
     if not cliente_final or cliente_final == "-- Seleccionar Cliente --":
-        st.error("Por favor seleccione o escriba un cliente válido.")
+        st.error("Por favor seleccione un cliente válido.")
     elif not inventario_ingresado and not custom_inventario:
         st.error("No hay productos con inventario para reportar.")
     else:
         lineas_wa = [f"{cliente_final}", f"{fecha_val} {hora_val}", "Inventario", "", "PRODUCTO", ""]
-        
         todo_inventario = {**inventario_ingresado, **custom_inventario}
+        
+        prods_list, cants_list, vencs_list, desps_list = [], [], [], []
         
         for prod, info in todo_inventario.items():
             linea = f"{prod}  {info['cantidad']}"
@@ -247,14 +291,29 @@ if st.button("📲 Generar Vista Previa y Enviar a WhatsApp"):
                 linea += f" ({info['vencimiento']})"
             lineas_wa.append(linea)
             
+            prods_list.append(prod)
+            cants_list.append(str(info['cantidad']))
+            vencs_list.append(info['vencimiento'] if info['vencimiento'] else "-")
+            desps_list.append(str(info['despacho']))
+            
         mensaje_final = "\n".join(lineas_wa)
         
-        st.success("¡Reporte generado con éxito!")
-        st.text_area("Vista previa del mensaje:", mensaje_final, height=150)
+        # 1. ENVIAR A SHEETS Y FIRESTORE AL INSTANTE
+        datos_envio = {
+            "fechaHora": f"{fecha_val} {hora_val}",
+            "cliente": cliente_final,
+            "colProductos": "\n".join(prods_list),
+            "colCantidades": "\n".join(cants_list),
+            "colVencimientos": "\n".join(vencs_list),
+            "colDespachos": "\n".join(desps_list)
+        }
+        guardar_visita_sheets_firestore(datos_envio)
         
-        # Enlace directo de WhatsApp con tu número corporativo
-        numero_whatsapp = "584244527538"
-        url_whatsapp = f"https://api.whatsapp.com/send?phone={numero_whatsapp}&text={urllib.parse.quote(mensaje_final)}"
+        # 2. VISTA PREVIA Y BOTÓN WHATSAPP
+        st.success("¡Reporte generado y enviado a la base de datos!")
+        st.text_area("Vista previa mensaje WhatsApp:", mensaje_final, height=150)
+        
+        url_whatsapp = f"https://api.whatsapp.com/send?phone=584244527538&text={urllib.parse.quote(mensaje_final)}"
         
         st.markdown(f'''
             <a href="{url_whatsapp}" target="_blank">
@@ -263,21 +322,3 @@ if st.button("📲 Generar Vista Previa y Enviar a WhatsApp"):
                 </button>
             </a>
         ''', unsafe_allow_html=True)
-        
-        # Registro automático en Google Sheets
-        try:
-            if "gcp_service_account" in st.secrets:
-                import gspread
-                gc = gspread.service_account_from_dict(dict(st.secrets["gcp_service_account"]))
-                sh = gc.open("NostraGourmetDB")
-                sheet = sh.sheet1
-                
-                col_prods = "\n".join(todo_inventario.keys())
-                col_cants = "\n".join([str(info['cantidad']) for info in todo_inventario.values()])
-                col_vencs = "\n".join([info['vencimiento'] if info['vencimiento'] else "-" for info in todo_inventario.values()])
-                col_desps = "\n".join([str(info['despacho']) for info in todo_inventario.values()])
-                
-                sheet.append_row([f"{fecha_val} {hora_val}", cliente_final, col_prods, col_cants, col_vencs, col_desps])
-                st.toast("✅ Datos guardados automáticamente en Google Sheets", icon="📊")
-        except Exception as e:
-            pass
