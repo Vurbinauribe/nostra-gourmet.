@@ -5,14 +5,12 @@ import re
 import difflib
 import json
 
-# Configuración inicial
 st.set_page_config(
     page_title="NOSTRA GOURMET - Inventario",
     layout="centered",
     initial_sidebar_state="collapsed"
 )
 
-# Estilos limpios de alta legibilidad
 st.markdown("""
     <style>
         .main-title { color: #6b001a; text-align: center; font-size: 22px; font-weight: 800; text-transform: uppercase; margin-bottom: 0px; }
@@ -26,7 +24,7 @@ st.markdown('<p class="main-title">NOSTRA GOURMET</p>', unsafe_allow_html=True)
 st.markdown('<p class="sub-title">Inventario y Control de Visitas</p>', unsafe_allow_html=True)
 
 # ----------------------------------------------------
-# 1. LISTADOS Y ESTADO DE SESIÓN
+# 1. ESTADO DE SESIÓN Y LISTADOS
 # ----------------------------------------------------
 if 'productos_base' not in st.session_state:
     st.session_state.productos_base = [
@@ -58,33 +56,28 @@ if 'inv_anterior_map' not in st.session_state:
     st.session_state.inv_anterior_map = {}
 
 if 'local_storage_db' not in st.session_state:
-    st.session_state.local_storage_db = {} # Respaldo Local en memoria temporal
+    st.session_state.local_storage_db = {}
 
 # ----------------------------------------------------
-# 2. FUNCIONES DE NORMALIZACIÓN Y BÚSQUEDA INTEGRA
+# 2. NORMALIZACIÓN Y BÚSQUEDA (CASCADA: SHEETS ➔ FIREBASE ➔ LOCAL)
 # ----------------------------------------------------
 def normalizar(texto):
-    """Elimina tildes y caracteres especiales para comparar producto exacto"""
+    if not texto:
+        return ""
     texto = texto.lower().strip()
-    replacements = (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u"))
+    replacements = (("á", "a"), ("é", "e"), ("í", "i"), ("ó", "o"), ("ú", "u"), ("ü", "u"))
     for a, b in replacements:
         texto = texto.replace(a, b)
     return re.sub(r'[^a-z0-9]', '', texto)
 
 def consultar_inv_cascada(cliente_nombre):
-    """
-    JERARQUÍA EXACTA DE CONSULTA:
-    1º Google Sheets
-    2º Firebase Firestore
-    3º Memoria Local (localStorage)
-    """
     if not cliente_nombre or cliente_nombre in ["-- Seleccionar Cliente --", "MANUAL"]:
         return {}
     
     cliente_target = cliente_nombre.strip().lower()
     mapa_res = {}
 
-    # 1. PASO 1: GOOGLE SHEETS
+    # PASO 1: GOOGLE SHEETS (Leyendo columnas exactas: Col B Cliente [1], Col C Producto [2], Col D Cantidad [3])
     try:
         if "gcp_service_account" in st.secrets:
             import gspread
@@ -95,40 +88,31 @@ def consultar_inv_cascada(cliente_nombre):
 
             for i in range(len(rows) - 1, 0, -1):
                 fila = rows[i]
-                c_nom = (fila[1] if len(fila) > 1 else "").strip().lower()
+                c_nom = (fila[1] if len(fila) > 1 else "").strip().lower() # Columna B: Cliente
                 if c_nom == cliente_target:
-                    col_p = fila[2] if len(fila) > 2 else ""
-                    col_c = fila[3] if len(fila) > 3 else ""
+                    col_p = fila[2] if len(fila) > 2 else "" # Columna C: Producto
+                    col_c = fila[3] if len(fila) > 3 else "" # Columna D: Cantidad
 
-                    if ':' not in col_p and col_c != "":
-                        arr_p = col_p.split('\n')
-                        arr_c = col_c.split('\n')
-                        for j in range(len(arr_p)):
-                            p_item = arr_p[j].strip()
-                            c_item = arr_c[j].strip() if j < len(arr_c) else "0"
-                            if p_item and p_item not in mapa_res:
-                                mapa_res[p_item] = c_item
-                    else:
-                        lineas = col_p.split('\n') if ':' in col_p else col_c.split('\n')
-                        for lin in lineas:
-                            if ':' in lin:
-                                pts = lin.split(':')
-                                prd = pts[0].strip()
-                                cnt = pts[1].strip().split('(')[0].strip()
-                                if prd and prd not in mapa_res:
-                                    mapa_res[prd] = cnt
+                    arr_p = col_p.split('\n')
+                    arr_c = col_c.split('\n')
+                    for j in range(len(arr_p)):
+                        p_item = arr_p[j].strip()
+                        c_item = arr_c[j].strip() if j < len(arr_c) else "0"
+                        if p_item and p_item not in mapa_res:
+                            mapa_res[p_item] = c_item
                     if len(mapa_res) > 0:
                         return mapa_res
     except Exception as e:
-        print("Sheets sin respuesta / buscando respaldo...", e)
+        st.sidebar.warning(f"Aviso Sheets (Inventario Anterior): {e}")
 
-    # 2. PASO 2: FIRESTORE (Si no trajo datos de Sheets)
+    # PASO 2: FIREBASE FIRESTORE
     try:
-        if "firebase" in st.secrets:
+        if "firebase" in st.secrets or "gcp_service_account" in st.secrets:
             import firebase_admin
             from firebase_admin import credentials, firestore
             if not firebase_admin._apps:
-                cred = credentials.Certificate(dict(st.secrets["firebase"]))
+                cred_dict = dict(st.secrets.get("firebase", st.secrets.get("gcp_service_account")))
+                cred = credentials.Certificate(cred_dict)
                 firebase_admin.initialize_app(cred)
             db = firestore.client()
             doc_ref = db.collection("inventarios").document(cliente_target).get()
@@ -137,19 +121,18 @@ def consultar_inv_cascada(cliente_nombre):
                 if "ultimoInventario" in data_fs:
                     return data_fs["ultimoInventario"]
     except Exception as e:
-        print("Firestore no disponible / buscando respaldo local...", e)
+        st.sidebar.warning(f"Aviso Firebase (Inventario Anterior): {e}")
 
-    # 3. PASO 3: MEMORIA LOCAL (localStorage fallback)
+    # PASO 3: MEMORIA LOCAL
     if cliente_target in st.session_state.local_storage_db:
         return st.session_state.local_storage_db[cliente_target]
 
     return mapa_res
 
 def guardar_registros(datos):
-    """Guarda en Google Sheets, Firestore y Memoria Local"""
     cliente_key = datos['cliente'].strip().lower()
     
-    # 1. Guardar localmente
+    # Memoria Local
     mapa_local = {}
     prods = datos['colProductos'].split('\n')
     cants = datos['colCantidades'].split('\n')
@@ -158,7 +141,8 @@ def guardar_registros(datos):
             mapa_local[prods[i]] = cants[i] if i < len(cants) else "0"
     st.session_state.local_storage_db[cliente_key] = mapa_local
 
-    # 2. Guardar en Google Sheets
+    # Google Sheets (Escribiendo en el orden exacto de tus 7 columnas: A hasta G)
+    sheets_ok = False
     try:
         if "gcp_service_account" in st.secrets:
             import gspread
@@ -166,20 +150,42 @@ def guardar_registros(datos):
             sh = gc.open("INVENTARIO NOSTRA GOURMET")
             sheet = sh.worksheet("Hoja 1")
             sheet.append_row([
-                datos['fechaHora'],
-                datos['cliente'],
-                datos['colProductos'],
-                datos['colCantidades'],
-                datos['colVencimientos'],
-                datos['colDespachos'],
-                "" # Columna nota
+                datos['fechaHora'],    # Col A: Fecha Visita
+                datos['cliente'],      # Col B: Cliente
+                datos['colProductos'], # Col C: Producto
+                datos['colCantidades'],# Col D: Cantidad
+                datos['colVencimientos'],# Col E: Fecha venc
+                datos['colDespachos'], # Col F: Despacho
+                ""                     # Col G: nota
             ])
-            st.toast("✅ Guardado exitoso en Google Sheets", icon="📊")
+            sheets_ok = True
     except Exception as e:
-        st.warning(f"Error al escribir en Sheets: {e}")
+        st.error(f"Error al guardar en Google Sheets: {e}")
+
+    # Firebase Firestore
+    firebase_ok = False
+    try:
+        if "firebase" in st.secrets or "gcp_service_account" in st.secrets:
+            import firebase_admin
+            from firebase_admin import credentials, firestore
+            if not firebase_admin._apps:
+                cred_dict = dict(st.secrets.get("firebase", st.secrets.get("gcp_service_account")))
+                cred = credentials.Certificate(cred_dict)
+                firebase_admin.initialize_app(cred)
+            db = firestore.client()
+            db.collection("inventarios").document(cliente_key).set({
+                "ultimoInventario": mapa_local,
+                "ultimaActualizacion": datos['fechaHora']
+            }, merge=True)
+            firebase_ok = True
+    except Exception as e:
+        st.error(f"Error al guardar en Firebase: {e}")
+
+    if sheets_ok or firebase_ok:
+        st.toast("✅ ¡Guardado con éxito en Sheets y Firebase!", icon="🚀")
 
 # ----------------------------------------------------
-# 3. CABECERA Y SELECCIÓN DE CLIENTES
+# 3. INTERFAZ DE CLIENTES
 # ----------------------------------------------------
 col1, col2 = st.columns(2)
 with col1:
@@ -187,15 +193,16 @@ with col1:
 with col2:
     hora_val = st.text_input("Hora", value=datetime.now().strftime("%H:%M"))
 
-def al_seleccionar_cliente():
+def al_cambiar_cliente():
     sel = st.session_state.cliente_select_key
-    st.session_state.inv_anterior_map = consultar_inv_cascada(sel)
+    if sel and sel != "-- Seleccionar Cliente --":
+        st.session_state.inv_anterior_map = consultar_inv_cascada(sel)
 
 cliente_sel = st.selectbox(
     "Cliente / Establecimiento",
     st.session_state.clientes_lista,
     key="cliente_select_key",
-    on_change=al_seleccionar_cliente
+    on_change=al_cambiar_cliente
 )
 
 cliente_final = cliente_sel
@@ -209,7 +216,7 @@ if cliente_sel == "MANUAL":
 st.divider()
 
 # ----------------------------------------------------
-# 4. CARGA RÁPIDA CORREGIDA 100% (PARSER FLEXIBLE)
+# 4. CARGA RÁPIDA (FLEXIBLE Y ROBUSTA)
 # ----------------------------------------------------
 with st.expander("⚡ CARGA RÁPIDA (PEGAR TEXTO)"):
     texto_pasted = st.text_area("Pega aquí el inventario. Ej:\nQueso Grana Padano : 100\nQueso Parmigiano : 1777\nQueso azúl: 5")
@@ -322,7 +329,7 @@ for i in range(1, 6):
 st.divider()
 
 # ----------------------------------------------------
-# 6. ENVIAR REPORTE Y RECONEXIÓN
+# 6. ACCIÓN DE ENVÍO Y REINICIO AUTOMÁTICO
 # ----------------------------------------------------
 if st.button("📲 GENERAR Y GUARDAR REPORTE"):
     if not cliente_final or cliente_final == "-- Seleccionar Cliente --":
@@ -348,35 +355,11 @@ if st.button("📲 GENERAR Y GUARDAR REPORTE"):
             
         mensaje_wa = "\n".join(lineas_wa)
         
-        # 1. Guardar en Sheets y respaldos
+        # 1. Guardar en Base de Datos y Sheets con las columnas exactas
         payload = {
             "fechaHora": f"{fecha_val} {hora_val}",
             "cliente": cliente_final,
             "colProductos": "\n".join(prods_l),
             "colCantidades": "\n".join(cants_l),
             "colVencimientos": "\n".join(vencs_l),
-            "colDespachos": "\n".join(desps_l)
-        }
-        guardar_registros(payload)
-        
-        st.success("¡Datos guardados con éxito en tu Google Sheet!")
-        st.text_area("Vista previa WhatsApp:", mensaje_wa, height=140)
-        
-        url_wa = f"https://api.whatsapp.com/send?phone=584244527538&text={urllib.parse.quote(mensaje_wa)}"
-        
-        st.markdown(f'''
-            <a href="{url_wa}" target="_blank">
-                <button style="width: 100%; background-color: #25D366; color: white; padding: 12px; border: none; border-radius: 8px; font-weight: bold; font-size: 15px; cursor: pointer; text-transform: uppercase;">
-                    📲 Abrir WhatsApp con el Reporte
-                </button>
-            </a>
-        ''', unsafe_allow_html=True)
-        
-        # Botón de Reset para volver al principio tras enviar
-        if st.button("🔄 REINICIAR FORMULARIO PARA NUEVA VISITA"):
-            for idx in range(len(st.session_state.productos_base)):
-                st.session_state[f"cant_p_{idx}"] = 0
-                st.session_state[f"venc_p_{idx}"] = ""
-                st.session_state[f"desp_p_{idx}"] = 0
-            st.session_state.inv_anterior_map = {}
-            st.rerun()
+            "colDespachos": "\n
