@@ -10,6 +10,7 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+# Estilos corporativos limpios y rápidos
 st.markdown("""
     <style>
         .main-title { color: #6b001a; text-align: center; font-size: 22px; font-weight: 800; text-transform: uppercase; margin-bottom: 0px; }
@@ -23,7 +24,7 @@ st.markdown('<p class="main-title">NOSTRA GOURMET</p>', unsafe_allow_html=True)
 st.markdown('<p class="sub-title">Inventario y Control de Visitas</p>', unsafe_allow_html=True)
 
 # ----------------------------------------------------
-# 1. ESTADO DE SESIÓN Y LISTADOS
+# 1. ESTADO DE SESIÓN Y LISTADOS BASE
 # ----------------------------------------------------
 if 'productos_base' not in st.session_state:
     st.session_state.productos_base = [
@@ -57,17 +58,8 @@ if 'inv_anterior_map' not in st.session_state:
 if 'local_storage_db' not in st.session_state:
     st.session_state.local_storage_db = {}
 
-# GESTIÓN SEGURA DEL REINICIO DE FORMULARIO
-if st.session_state.get('trigger_reset', False):
-    for idx in range(len(st.session_state.productos_base)):
-        st.session_state[f"cant_p_{idx}"] = 0
-        st.session_state[f"venc_p_{idx}"] = ""
-        st.session_state[f"desp_p_{idx}"] = 0
-    st.session_state.inv_anterior_map = {}
-    st.session_state.trigger_reset = False
-
 # ----------------------------------------------------
-# 2. NORMALIZACIÓN Y BÚSQUEDA EN CASCADA
+# 2. NORMALIZACIÓN Y BÚSQUEDA EN CASCADA (SHEETS -> FIREBASE -> LOCAL)
 # ----------------------------------------------------
 def normalizar(texto):
     if not texto:
@@ -85,7 +77,7 @@ def consultar_inv_cascada(cliente_nombre):
     cliente_target = cliente_nombre.strip().lower()
     mapa_res = {}
 
-    # PASO 1: GOOGLE SHEETS
+    # 1º PASO: GOOGLE SHEETS
     try:
         if "gcp_service_account" in st.secrets:
             import gspread
@@ -113,7 +105,7 @@ def consultar_inv_cascada(cliente_nombre):
     except Exception as e:
         pass
 
-    # PASO 2: FIREBASE FIRESTORE
+    # 2º PASO: FIREBASE FIRESTORE
     try:
         if "gcp_service_account" in st.secrets:
             import firebase_admin
@@ -130,7 +122,7 @@ def consultar_inv_cascada(cliente_nombre):
     except Exception as e:
         pass
 
-    # PASO 3: MEMORIA LOCAL
+    # 3º PASO: MEMORIA LOCAL
     if cliente_target in st.session_state.local_storage_db:
         return st.session_state.local_storage_db[cliente_target]
 
@@ -139,7 +131,7 @@ def consultar_inv_cascada(cliente_nombre):
 def guardar_registros(datos):
     cliente_key = datos['cliente'].strip().lower()
     
-    # 1. Memoria Local
+    # Memoria Local
     mapa_local = {}
     prods = datos['colProductos'].split('\n')
     cants = datos['colCantidades'].split('\n')
@@ -148,8 +140,7 @@ def guardar_registros(datos):
             mapa_local[prods[i]] = cants[i] if i < len(cants) else "0"
     st.session_state.local_storage_db[cliente_key] = mapa_local
 
-    # 2. Google Sheets
-    sheets_ok = False
+    # Google Sheets (Columnas exactas A-G)
     try:
         if "gcp_service_account" in st.secrets:
             import gspread
@@ -157,20 +148,18 @@ def guardar_registros(datos):
             sh = gc.open("INVENTARIO NOSTRA GOURMET")
             sheet = sh.worksheet("Hoja 1")
             sheet.append_row([
-                datos['fechaHora'],
-                datos['cliente'],
-                datos['colProductos'],
-                datos['colCantidades'],
-                datos['colVencimientos'],
-                datos['colDespachos'],
-                ""
+                datos['fechaHora'],      # Col A
+                datos['cliente'],        # Col B
+                datos['colProductos'],   # Col C
+                datos['colCantidades'],  # Col D
+                datos['colVencimientos'],# Col E
+                datos['colDespachos'],   # Col F
+                ""                       # Col G (nota)
             ])
-            sheets_ok = True
     except Exception as e:
-        st.error(f"Error Google Sheets: {e}")
+        st.error(f"Error Sheets: {e}")
 
-    # 3. Firebase Firestore
-    firebase_ok = False
+    # Firebase Firestore
     try:
         if "gcp_service_account" in st.secrets:
             import firebase_admin
@@ -183,15 +172,11 @@ def guardar_registros(datos):
                 "ultimoInventario": mapa_local,
                 "ultimaActualizacion": datos['fechaHora']
             }, merge=True)
-            firebase_ok = True
     except Exception as e:
         st.error(f"Error Firebase: {e}")
 
-    if sheets_ok or firebase_ok:
-        st.success("¡Guardado correctamente en la base de datos!")
-
 # ----------------------------------------------------
-# 3. INTERFAZ DE CLIENTES
+# 3. INTERFAZ DE CLIENTES Y FECHA
 # ----------------------------------------------------
 col1, col2 = st.columns(2)
 with col1:
@@ -222,7 +207,7 @@ if cliente_sel == "MANUAL":
 st.divider()
 
 # ----------------------------------------------------
-# 4. CARGA RÁPIDA (PEGAR TEXTO)
+# 4. CARGA RÁPIDA (PEGAR TEXTO ROBUSTA)
 # ----------------------------------------------------
 with st.expander("⚡ CARGA RÁPIDA (PEGAR TEXTO)"):
     texto_pasted = st.text_area("Pega aquí el inventario. Ej:\nQueso Grana Padano : 100\nQueso Parmigiano : 1777\nQueso azúl: 5")
@@ -335,11 +320,11 @@ for i in range(1, 6):
 st.divider()
 
 # ----------------------------------------------------
-# 6. ACCIÓN DE ENVÍO Y REINICIO AUTOMÁTICO SEGURO
+# 6. ACCIÓN DE ENVÍO, WHATSAPP Y REINICIO MANUAL
 # ----------------------------------------------------
 if st.button("📲 GENERAR Y GUARDAR REPORTE"):
     if not cliente_final or cliente_final == "-- Seleccionar Cliente --":
-        st.error("Please select a valid client / Por favor seleccione un cliente válido.")
+        st.error("Por favor seleccione un cliente válido.")
     elif not inventario_ingresado and not custom_inventario:
         st.error("No hay productos cargados en el inventario.")
     else:
@@ -361,7 +346,7 @@ if st.button("📲 GENERAR Y GUARDAR REPORTE"):
             
         mensaje_wa = "\n".join(lineas_wa)
         
-        # Guardar en Sheets y Firebase
+        # Guardar en Sheets y Firebase inmediatamente
         payload = {
             "fechaHora": f"{fecha_val} {hora_val}",
             "cliente": cliente_final,
@@ -372,19 +357,25 @@ if st.button("📲 GENERAR Y GUARDAR REPORTE"):
         }
         guardar_registros(payload)
         
-        st.success("¡Reporte generado con éxito!")
+        st.success("¡Reporte generado y guardado en la base de datos!")
         st.text_area("Vista previa WhatsApp:", mensaje_wa, height=140)
         
-        url_wa = f"https://api.whatsapp.com/send?phone=584244527538&text={urllib.parse.quote(mensaje_wa)}"
+        url_wa = "https://api.whatsapp.com/send?phone=584244527538&text=" + urllib.parse.quote(mensaje_wa)
         
+        # Botón de WhatsApp fijo y visible para poder hacerle clic
         st.markdown(f'''
             <a href="{url_wa}" target="_blank">
-                <button style="width: 100%; background-color: #25D366; color: white; padding: 12px; border: none; border-radius: 8px; font-weight: bold; font-size: 15px; cursor: pointer; text-transform: uppercase;">
-                    💬 Abrir WhatsApp con el Reporte
+                <button style="width: 100%; background-color: #25D366; color: white; padding: 14px; border: none; border-radius: 8px; font-weight: bold; font-size: 16px; cursor: pointer; text-transform: uppercase; margin-bottom: 10px;">
+                    💬 ABRIR WHATSAPP CON EL REPORTE
                 </button>
             </a>
         ''', unsafe_allow_html=True)
-        
-        # ACTIVAR BANDERA DE REINICIO SEGURO Y RECARGAR
-        st.session_state.trigger_reset = True
-        st.rerun()
+
+# Botón independiente para limpiar y vaciar la tabla para una nueva visita
+if st.button("🔄 NUEVA VISITA / LIMPIAR FORMULARIO"):
+    for idx in range(len(st.session_state.productos_base)):
+        st.session_state[f"cant_p_{idx}"] = 0
+        st.session_state[f"venc_p_{idx}"] = ""
+        st.session_state[f"desp_p_{idx}"] = 0
+    st.session_state.inv_anterior_map = {}
+    st.rerun()
