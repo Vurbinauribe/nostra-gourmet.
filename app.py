@@ -362,4 +362,28 @@ if st.button("📲 GENERAR Y GUARDAR REPORTE"):
             "colProductos": "\n".join(prods_l),
             "colCantidades": "\n".join(cants_l),
             "colVencimientos": "\n".join(vencs_l),
-            "colDespachos": "\n
+            "colDespachos": "\n".join(desps_l)
+        }
+        guardar_registros(payload)
+        
+        st.success("¡Reporte generado con éxito!")
+        st.text_area("Vista previa WhatsApp:", mensaje_wa, height=140)
+        
+        url_wa = f"https://api.whatsapp.com/send?phone=584244527538&text={urllib.parse.quote(mensaje_wa)}"
+        
+        st.markdown(f'''
+            <a href="{url_wa}" target="_blank">
+                <button style="width: 100%; background-color: #25D366; color: white; padding: 12px; border: none; border-radius: 8px; font-weight: bold; font-size: 15px; cursor: pointer; text-transform: uppercase;">
+                    💬 Abrir WhatsApp con el Reporte
+                </button>
+            </a>
+        ''', unsafe_allow_html=True)
+        
+        # 2. REINICIO AUTOMÁTICO INMEDIATO DE TODOS LOS CAMPOS
+        for idx in range(len(st.session_state.productos_base)):
+            st.session_state[f"cant_p_{idx}"] = 0
+            st.session_state[f"venc_p_{idx}"] = ""
+            st.session_state[f"desp_p_{idx}"] = 0
+        st.session_state.inv_anterior_map = {}
+        
+        st.toast("🔄 ¡Formulario reiniciado automáticamente para la siguiente visita!", icon="🚀")
