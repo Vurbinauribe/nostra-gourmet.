@@ -10,7 +10,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
-# Estilos corporativos limpios y rápidos
 st.markdown("""
     <style>
         .main-title { color: #6b001a; text-align: center; font-size: 22px; font-weight: 800; text-transform: uppercase; margin-bottom: 0px; }
@@ -58,8 +57,22 @@ if 'inv_anterior_map' not in st.session_state:
 if 'local_storage_db' not in st.session_state:
     st.session_state.local_storage_db = {}
 
+# GESTIÓN SEGURA DEL REINICIO (Evita el error de widgets instanciados)
+if st.session_state.get('trigger_reset', False):
+    for idx in range(len(st.session_state.productos_base)):
+        st.session_state.pop(f"cant_p_{idx}", None)
+        st.session_state.pop(f"venc_p_{idx}", None)
+        st.session_state.pop(f"desp_p_{idx}", None)
+    for i in range(1, 6):
+        st.session_state.pop(f"custom_prod_{i}", None)
+        st.session_state.pop(f"custom_cant_{i}", None)
+        st.session_state.pop(f"custom_venc_{i}", None)
+        st.session_state.pop(f"custom_desp_{i}", None)
+    st.session_state.inv_anterior_map = {}
+    st.session_state.trigger_reset = False
+
 # ----------------------------------------------------
-# 2. NORMALIZACIÓN Y BÚSQUEDA EN CASCADA (SHEETS -> FIREBASE -> LOCAL)
+# 2. NORMALIZACIÓN Y BÚSQUEDA EN CASCADA
 # ----------------------------------------------------
 def normalizar(texto):
     if not texto:
@@ -107,11 +120,12 @@ def consultar_inv_cascada(cliente_nombre):
 
     # 2º PASO: FIREBASE FIRESTORE
     try:
-        if "gcp_service_account" in st.secrets:
+        if "gcp_service_account" in st.secrets or "firebase" in st.secrets:
             import firebase_admin
             from firebase_admin import credentials, firestore
             if not firebase_admin._apps:
-                cred = credentials.Certificate(dict(st.secrets["gcp_service_account"]))
+                cred_dict = dict(st.secrets.get("firebase", st.secrets.get("gcp_service_account")))
+                cred = credentials.Certificate(cred_dict)
                 firebase_admin.initialize_app(cred)
             db = firestore.client()
             doc_ref = db.collection("inventarios").document(cliente_target).get()
@@ -140,7 +154,7 @@ def guardar_registros(datos):
             mapa_local[prods[i]] = cants[i] if i < len(cants) else "0"
     st.session_state.local_storage_db[cliente_key] = mapa_local
 
-    # Google Sheets (Columnas exactas A-G)
+    # Google Sheets (Columnas A-G)
     try:
         if "gcp_service_account" in st.secrets:
             import gspread
@@ -157,15 +171,16 @@ def guardar_registros(datos):
                 ""                       # Col G (nota)
             ])
     except Exception as e:
-        st.error(f"Error Sheets: {e}")
+        st.error(f"Error Google Sheets: {e}")
 
     # Firebase Firestore
     try:
-        if "gcp_service_account" in st.secrets:
+        if "gcp_service_account" in st.secrets or "firebase" in st.secrets:
             import firebase_admin
             from firebase_admin import credentials, firestore
             if not firebase_admin._apps:
-                cred = credentials.Certificate(dict(st.secrets["gcp_service_account"]))
+                cred_dict = dict(st.secrets.get("firebase", st.secrets.get("gcp_service_account")))
+                cred = credentials.Certificate(cred_dict)
                 firebase_admin.initialize_app(cred)
             db = firestore.client()
             db.collection("inventarios").document(cliente_key).set({
@@ -362,7 +377,7 @@ if st.button("📲 GENERAR Y GUARDAR REPORTE"):
         
         url_wa = "https://api.whatsapp.com/send?phone=584244527538&text=" + urllib.parse.quote(mensaje_wa)
         
-        # Botón de WhatsApp fijo y visible para poder hacerle clic
+        # Botón de WhatsApp fijo
         st.markdown(f'''
             <a href="{url_wa}" target="_blank">
                 <button style="width: 100%; background-color: #25D366; color: white; padding: 14px; border: none; border-radius: 8px; font-weight: bold; font-size: 16px; cursor: pointer; text-transform: uppercase; margin-bottom: 10px;">
@@ -373,9 +388,5 @@ if st.button("📲 GENERAR Y GUARDAR REPORTE"):
 
 # Botón independiente para limpiar y vaciar la tabla para una nueva visita
 if st.button("🔄 NUEVA VISITA / LIMPIAR FORMULARIO"):
-    for idx in range(len(st.session_state.productos_base)):
-        st.session_state[f"cant_p_{idx}"] = 0
-        st.session_state[f"venc_p_{idx}"] = ""
-        st.session_state[f"desp_p_{idx}"] = 0
-    st.session_state.inv_anterior_map = {}
+    st.session_state.trigger_reset = True
     st.rerun()
